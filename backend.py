@@ -10,8 +10,8 @@ import hashlib
 import time
 
 # 1. Initialize Firebase
-# Ensure this .json file is uploaded to your GitHub in the same folder as this script
-service_key_path = "./nuture-7aafa-firebase-adminsdk-fbsvc-326796a2cd.json"
+# Using environment variable for the key path makes it easier to manage on Render
+service_key_path = os.environ.get("FIREBASE_SERVICE_KEY", "./nuture-7aafa-firebase-adminsdk-fbsvc-326796a2cd.json")
 
 try:
     if not firebase_admin._apps:
@@ -20,13 +20,19 @@ try:
     db = firestore.client()
     print(">>> Success: Connected to Firebase Firestore")
 except Exception as e:
-    print(f">>>> Error: Could not find or load {service_key_path}")
+    print(f">>>> Error: Could not find or load Firebase key at {service_key_path}")
     print(f">>> Details: {e}")
 
 app = Flask(__name__)
 
-# Allow all origins for the prototype; you can restrict this to your Vercel URL later
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+# 2. Optimized CORS
+# Replace 'https://nuture-final.vercel.app' with your actual Vercel project URL
+allowed_origins = [
+    "https://nuture-final.vercel.app", 
+    "http://localhost:5173"
+]
+
+CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credentials=True)
 
 # --- HELPERS ---
 
@@ -44,6 +50,9 @@ def safe_iso_date(obj):
     """Helper to convert Firestore timestamps or strings to ISO format safely."""
     if obj is None: return None
     if hasattr(obj, 'isoformat'): return obj.isoformat()
+    # Handle Firestore Timestamp objects
+    if hasattr(obj, 'to_datetime'):
+        return obj.to_datetime().isoformat()
     return str(obj)
 
 # --- ROUTES ---
@@ -119,13 +128,14 @@ def get_subscription(uid):
         user_doc = db.collection('users').document(uid).get()
         if user_doc.exists:
             user_data = user_doc.to_dict()
+            # Fetch approved claims to calculate remaining coverage
             claims = db.collection('claims').where('userId', '==', uid).where('status', '==', 'approved').stream()
             total_used = sum([doc.to_dict().get('amount', 0) for doc in claims])
             return jsonify({
                 "subscription": user_data.get('subscription'), 
                 "coverageUsed": total_used
             }), 200
-        return jsonify({"error": "Not found"}), 404
+        return jsonify({"error": "User not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -145,6 +155,7 @@ def submit_claim():
             'receipts': data.get('receipts', [])
         }
         claim_ref.set(claim_data)
+        # Bonus: Increment user streak for being proactive about health
         db.collection('users').document(data.get('uid')).update({'streak': firestore.Increment(1)})
         return jsonify({"message": "Success", "claimId": claim_ref.id}), 201
     except Exception as e:
@@ -159,21 +170,9 @@ def get_user_claims(uid):
             c = doc.to_dict()
             c['date'] = safe_iso_date(c.get('date'))
             claims_list.append(c)
-        claims_list.sort(key=lambda x: x.get('date', ''), reverse=True)
+        # Sort by most recent
+        claims_list.sort(key=lambda x: x.get('date', '') or '', reverse=True)
         return jsonify(claims_list), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/get-referrals/<uid>', methods=['GET'])
-def get_referrals(uid):
-    try:
-        user_doc = db.collection('users').document(uid).get()
-        user_data = user_doc.to_dict()
-        referrals = db.collection('referrals').where('referrerId', '==', uid).stream()
-        return jsonify({
-            "referralCode": user_data.get('referralCode'), 
-            "referrals": [doc.to_dict() for doc in referrals]
-        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -214,7 +213,6 @@ def get_vault(uid):
 
 if __name__ == '__main__':
     # Render assigns a port via environment variable. 
-    # This block ensures the app listens correctly on the assigned port.
     port = int(os.environ.get("PORT", 5000))
     print(f">>> Nuture Backend active on port {port}")
     app.run(host='0.0.0.0', port=port)
