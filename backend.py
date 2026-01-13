@@ -28,7 +28,7 @@ app = Flask(__name__)
 # 2. Optimized CORS
 # Replace 'https://nuture-final.vercel.app' with your actual Vercel project URL
 allowed_origins = [
-    "https://nuture-final.vercel.app", 
+    "https://nuture-me.vercel.app", 
     "http://localhost:5173"
 ]
 
