@@ -10,7 +10,8 @@ import hashlib
 import time
 
 # 1. Initialize Firebase
-# Using environment variable for the key path makes it easier to manage on Render
+# Render looks for the .json file in the root directory.
+# Ensure 'nuture-7aafa-firebase-adminsdk-fbsvc-326796a2cd.json' is in your GitHub repo.
 service_key_path = os.environ.get("FIREBASE_SERVICE_KEY", "./nuture-7aafa-firebase-adminsdk-fbsvc-326796a2cd.json")
 
 try:
@@ -18,15 +19,14 @@ try:
         cred = credentials.Certificate(service_key_path)
         firebase_admin.initialize_app(cred)
     db = firestore.client()
-    print(">>> Success: Connected to Firebase Firestore")
+    print(">>> Success: Connected to Firebase Firestore (Project: nuture-7aafa)")
 except Exception as e:
-    print(f">>>> Error: Could not find or load Firebase key at {service_key_path}")
-    print(f">>> Details: {e}")
+    print(f">>>> Fatal Error: Firebase initialization failed: {e}")
 
 app = Flask(__name__)
 
-# 2. Optimized CORS
-# Replace 'https://nuture-final.vercel.app' with your actual Vercel project URL
+# 2. CORS Configuration
+# We explicitly allow your Vercel production URL and Localhost for development.
 allowed_origins = [
     "https://nuture-me.vercel.app", 
     "http://localhost:5173"
@@ -37,9 +37,11 @@ CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credenti
 # --- HELPERS ---
 
 def generate_ref_code():
+    """Generates a unique referral code for new users."""
     return 'NUTM-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
 
 def generate_blockchain_proof(uid, filename):
+    """Simulates an on-chain anchoring by hashing data and generating a mock TX Hash."""
     timestamp = str(time.time())
     data_to_hash = f"{uid}-{filename}-{timestamp}"
     cid = f"Qm{hashlib.sha256(data_to_hash.encode()).hexdigest()[:16]}..."
@@ -47,15 +49,14 @@ def generate_blockchain_proof(uid, filename):
     return cid, tx_hash
 
 def safe_iso_date(obj):
-    """Helper to convert Firestore timestamps or strings to ISO format safely."""
+    """Safely converts Firestore Timestamps to ISO strings for JSON serialization."""
     if obj is None: return None
     if hasattr(obj, 'isoformat'): return obj.isoformat()
-    # Handle Firestore Timestamp objects
     if hasattr(obj, 'to_datetime'):
         return obj.to_datetime().isoformat()
     return str(obj)
 
-# --- ROUTES ---
+# --- API ROUTES ---
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -69,11 +70,14 @@ def health_check():
 def signup():
     data = request.json
     try:
+        # Create user in Firebase Authentication
         user = auth.create_user(
             email=data['email'], 
             password=data['password'], 
             display_name=data['fullName']
         )
+        
+        # Create user document in Firestore
         db.collection('users').document(user.uid).set({
             'fullName': data['fullName'],
             'email': data['email'],
@@ -81,10 +85,13 @@ def signup():
             'referralCode': generate_ref_code(),
             'points': 0, 
             'streak': 0, 
-            'createdAt': firestore.SERVER_TIMESTAMP
+            'createdAt': firestore.SERVER_TIMESTAMP,
+            'subscription': None
         })
-        return jsonify({"message": "User created", "uid": user.uid}), 201
+        
+        return jsonify({"message": "User created successfully", "uid": user.uid}), 201
     except Exception as e:
+        print(f"!!! SIGNUP ERROR: {str(e)}") # Visible in Render Logs
         return jsonify({"error": str(e)}), 400
 
 @app.route('/api/login', methods=['POST'])
@@ -94,12 +101,14 @@ def login():
         user = auth.get_user_by_email(data.get('email'))
         user_doc = db.collection('users').document(user.uid).get()
         user_data = user_doc.to_dict() if user_doc.exists else {}
+        
         return jsonify({
             "uid": user.uid, 
             "email": user.email, 
             "fullName": user_data.get('fullName', user.display_name)
         }), 200
     except Exception as e:
+        print(f"!!! LOGIN ERROR: {str(e)}")
         return jsonify({"error": "Invalid credentials"}), 401
 
 @app.route('/api/subscribe', methods=['POST'])
@@ -115,8 +124,9 @@ def subscribe_user():
             'paymentReference': data.get('reference')
         }
         user_ref.set({'subscription': subscription_data, 'points': firestore.Increment(100)}, merge=True)
+        
         return jsonify({
-            "message": "Active", 
+            "message": "Subscription activated", 
             "subscription": {**subscription_data, 'startDate': datetime.now().isoformat()}
         }), 200
     except Exception as e:
@@ -128,14 +138,15 @@ def get_subscription(uid):
         user_doc = db.collection('users').document(uid).get()
         if user_doc.exists:
             user_data = user_doc.to_dict()
-            # Fetch approved claims to calculate remaining coverage
+            # Calculate total approved claims to determine usage
             claims = db.collection('claims').where('userId', '==', uid).where('status', '==', 'approved').stream()
             total_used = sum([doc.to_dict().get('amount', 0) for doc in claims])
+            
             return jsonify({
                 "subscription": user_data.get('subscription'), 
                 "coverageUsed": total_used
             }), 200
-        return jsonify({"error": "User not found"}), 404
+        return jsonify({"error": "User profile not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -155,9 +166,9 @@ def submit_claim():
             'receipts': data.get('receipts', [])
         }
         claim_ref.set(claim_data)
-        # Bonus: Increment user streak for being proactive about health
+        # Update user streak for engaging with the platform
         db.collection('users').document(data.get('uid')).update({'streak': firestore.Increment(1)})
-        return jsonify({"message": "Success", "claimId": claim_ref.id}), 201
+        return jsonify({"message": "Claim submitted", "claimId": claim_ref.id}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -170,7 +181,8 @@ def get_user_claims(uid):
             c = doc.to_dict()
             c['date'] = safe_iso_date(c.get('date'))
             claims_list.append(c)
-        # Sort by most recent
+        
+        # Sort by date (descending)
         claims_list.sort(key=lambda x: x.get('date', '') or '', reverse=True)
         return jsonify(claims_list), 200
     except Exception as e:
@@ -181,6 +193,7 @@ def add_vault_record():
     data = request.json
     uid = data.get('uid')
     try:
+        # Generate simulated Blockchain Proofs
         cid, tx_hash = generate_blockchain_proof(uid, data.get('name'))
         doc_ref = db.collection('vault').document()
         record = {
@@ -209,10 +222,26 @@ def get_vault(uid):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- RENDER DEPLOYMENT CONFIGURATION ---
+@app.route('/api/get-referrals/<uid>', methods=['GET'])
+def get_referrals(uid):
+    try:
+        user_doc = db.collection('users').document(uid).get()
+        if not user_doc.exists:
+            return jsonify({"error": "User not found"}), 404
+            
+        user_data = user_doc.to_dict()
+        referrals = db.collection('referrals').where('referrerId', '==', uid).stream()
+        
+        return jsonify({
+            "referralCode": user_data.get('referralCode'), 
+            "referrals": [doc.to_dict() for doc in referrals]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- SERVER ENTRY POINT ---
 
 if __name__ == '__main__':
-    # Render assigns a port via environment variable. 
+    # Render binds to the PORT environment variable
     port = int(os.environ.get("PORT", 5000))
-    print(f">>> Nuture Backend active on port {port}")
     app.run(host='0.0.0.0', port=port)
