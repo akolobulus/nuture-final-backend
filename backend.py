@@ -23,7 +23,7 @@ try:
             print(">>> Success: Initialized Firebase via Environment Variable")
         else:
             # Fallback to local file for development
-            cred = credentials.Certificate("./nuture-7aafa-firebase-adminsdk-fbsvc-326796a2cd.json")
+            cred = credentials.Certificate("./nuture-7aafa-firebase-adminsdk-fbsvc-c9c5c31791.json")
             print(">>> Success: Initialized Firebase via Local JSON File")
             
         firebase_admin.initialize_app(cred)
