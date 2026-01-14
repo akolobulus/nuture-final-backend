@@ -11,7 +11,7 @@ import time
 
 # 1. Initialize Firebase
 # Using environment variable for the key path makes it easier to manage on Render
-service_key_path = os.environ.get("FIREBASE_SERVICE_KEY", "./nuture-7aafa-firebase-adminsdk-fbsvc-326796a2cd.json")
+service_key_path = os.environ.get("FIREBASE_SERVICE_KEY", "./nuture-7aafa-firebase-adminsdk-fbsvc-c9c5c31791.json")
 
 try:
     if not firebase_admin._apps:
